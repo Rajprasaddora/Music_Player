@@ -5,19 +5,27 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import android.Manifest;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.media.MediaPlayer;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.IBinder;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.View;
@@ -35,53 +43,99 @@ public class MainActivity extends AppCompatActivity implements OnSongSelectListe
     ArrayList<AudioModel> allSongs;
     MediaPlayer myMediaPlayer;
     AllSongAdapter mySongAdapter;
-    int playStatus;
-    int curr_playing_pos;
-
-    TextView songName,totalDuration,currDuration;
-    ImageView play,pause,skip_next,skip_previouse;
+    int  curr_playing_pos;
+    TextView songName, totalDuration, currDuration;
+    ImageView play, skip_next, skip_previouse;
     SeekBar seekBar;
-    Runnable runnable;
+    boolean mbound;
     Handler handler;
+    MyMusicPlayerService myMusicPlayerService;
+    ServiceConnection serviceConnection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+//            Log.d("raj", "service Connected");
+            myMusicPlayerService = ((MyMusicPlayerService.MyServiceBinder) service).getService();
+            mbound = true;
+            myMusicPlayerService.getAllSongs(allSongs);
+//            Log.d("raj","Activity Thread id is "+Thread.currentThread().getId());
+            if(!myMusicPlayerService.isNull()){
+                curr_playing_pos=myMusicPlayerService.getCurrentPlayingSong();
+                songName.setText(allSongs.get(curr_playing_pos).getaAlbum());
+                if(myMusicPlayerService.myPlay_status()==true){
+                    play.setImageResource(R.drawable.pause);    Runnable runnable;
+
+                }
+                int milis=myMusicPlayerService.getTotalDurationOfSong();
+                int min = (milis / 1000) / 60;
+                int sec = (milis / 1000) % 60;
+                String miniPart = "";
+
+                if (min < 10) {
+                    miniPart += "0" + String.valueOf(min);
+                } else {
+                    miniPart += String.valueOf(min);
+                }
+                String secPart = "";
+                if (sec < 10) {
+                    secPart += "0" + String.valueOf(sec);
+                } else {
+                    secPart += String.valueOf(sec);
+                }
+                totalDuration.setText(miniPart+":"+secPart);
+                seekBar.setMax(milis);
+                changeSeekBar();
+            }
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+//            Log.d("raj", "service Disconnected ");
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+//        Log.d("raj", "onCreate of Activity is called");
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        allSongs=new ArrayList<AudioModel>();
-        playStatus=0;
-        handler=new Handler();
-        int permissionCheck = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE);
+        allSongs = new ArrayList<AudioModel>();
+        handler = new Handler();
 
+
+        int permissionCheck = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE);
         if (permissionCheck != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, 1);
         } else {
-            allSongs=getAllAudioFromDevice(this);
+            allSongs = getAllAudioFromDevice(this);
         }
-        seekBar=findViewById(R.id.seekBar);
-        songName=findViewById(R.id.IdSongName);
+
+
+        seekBar = findViewById(R.id.seekBar);
+        songName = findViewById(R.id.IdSongName);
         songName.setSelected(true);
-        totalDuration=findViewById(R.id.IdTotalDuration);
-        currDuration=findViewById(R.id.IdCurrDuration);
-        play=findViewById(R.id.IdPlayButton);
-        skip_next=findViewById(R.id.IdSkipNext);
-        skip_previouse=findViewById(R.id.IdSkipPreviouse);
+        totalDuration = findViewById(R.id.IdTotalDuration);
+        currDuration = findViewById(R.id.IdCurrDuration);
+        play = findViewById(R.id.IdPlayButton);
+        skip_next = findViewById(R.id.IdSkipNext);
+        skip_previouse = findViewById(R.id.IdSkipPreviouse);
         play.setOnClickListener(this);
         skip_previouse.setOnClickListener(this);
         skip_next.setOnClickListener(this);
 
+
         seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if(myMediaPlayer==null){
+                if (myMusicPlayerService.isNull() == true) {
                     Toast.makeText(MainActivity.this, "No song selected ", Toast.LENGTH_SHORT).show();
                     seekBar.setProgress(0);
-                    return ;
+                    return;
                 }
-                if(fromUser){
-                    myMediaPlayer.seekTo(progress);
+                if (fromUser) {
+                    myMusicPlayerService.seekToPosition(progress);
                 }
             }
+
             @Override
             public void onStartTrackingTouch(SeekBar seekBar) {
 
@@ -93,24 +147,86 @@ public class MainActivity extends AppCompatActivity implements OnSongSelectListe
             }
         });
 
-        mySongAdapter=new AllSongAdapter(this, allSongs);
-        RecyclerView recyclerView=findViewById(R.id.RecyclerView);
+        mySongAdapter = new AllSongAdapter(this, allSongs);
+        RecyclerView recyclerView = findViewById(R.id.RecyclerView);
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
         recyclerView.setAdapter(mySongAdapter);
 
 
+    }
+    BroadcastReceiver mySongCompleteReceiver=new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            playNext();
+        }
+    };
 
-
-
+    @Override
+    protected void onStart() {
+//        Log.d("raj", "onStart of Activity is called");
+        super.onStart();
+        Intent intent = new Intent(MainActivity.this, MyMusicPlayerService.class);
+        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
+        LocalBroadcastManager.getInstance(getApplicationContext()).registerReceiver(mySongCompleteReceiver,new IntentFilter(MyMusicPlayerService.MUSIC_COMPLETE));
 
     }
 
+    @Override
+    public void songSelectedListener(int position) {
+        if (mbound) {
+            if (myMusicPlayerService.isNull()) {
+
+            } else if (myMusicPlayerService.isPlaying()) {
+                myMusicPlayerService.stop();
+            }
+            songName.setText(allSongs.get(position).getaAlbum());
+
+            Intent intent =new Intent(this,MyMusicPlayerService.class);
+            intent.putExtra("song_pos",position);
+//            intent.setAction(Constants.START_MUSIC_SERVICE);
+//            intent.setAction(Constants.PLAY_MUSIC);
+            startService(intent);
+            Uri uri=Uri.parse("file:///"+allSongs.get(position).getaName());
+            myMediaPlayer=MediaPlayer.create(this,uri);
+            int milis=myMediaPlayer.getDuration();
+            myMediaPlayer.release();
+            int min = (milis / 1000) / 60;
+            int sec = (milis / 1000) % 60;
+            String miniPart = "";
+
+            if (min < 10) {
+                miniPart += "0" + String.valueOf(min);
+            } else {
+                miniPart += String.valueOf(min);
+            }
+            String secPart = "";
+            if (sec < 10) {
+                secPart += "0" + String.valueOf(sec);
+            } else {
+                secPart += String.valueOf(sec);
+            }
+            totalDuration.setText(miniPart+":"+secPart);
+
+
+            play.setImageResource(R.drawable.pause);
+//            Log.d("raj","songSelected is called");
+//            Log.d("raj","startService is called");
+            myMusicPlayerService.start(position);
+//            Log.d("raj","start of myMusicPlayerService is called");
+
+            curr_playing_pos = position;
+            seekBar.setMax(milis);
+            changeSeekBar();
+        }
+        //play(position);
+    }
+
+
     public ArrayList<AudioModel> getAllAudioFromDevice(Context context) {
         ArrayList<AudioModel> tempAudioList = new ArrayList<>();
-        ContentResolver contentResolver=getContentResolver();
-        Uri musicUri= MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
-        Cursor c=contentResolver.query(musicUri,null,null,null,null);
-
+        ContentResolver contentResolver = getContentResolver();
+        Uri musicUri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+        Cursor c = contentResolver.query(musicUri, null, null, null, null);
 
 
         if (c != null) {
@@ -142,7 +258,7 @@ public class MainActivity extends AppCompatActivity implements OnSongSelectListe
     }
 
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        if (requestCode == 1)  {
+        if (requestCode == 1) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 getAllAudioFromDevice(this);
             } else {
@@ -151,160 +267,168 @@ public class MainActivity extends AppCompatActivity implements OnSongSelectListe
         }
     }
 
-    @Override
-    public void songSelectedListener(int position) {
-      play(position);
-    }
-    public void play(int postion){
-        Uri uri=Uri.parse("file:///"+allSongs.get(postion).getaName());
-        if(myMediaPlayer==null){
-            myMediaPlayer=MediaPlayer.create(this,uri);
-        }
-        else{
-            stop();
-            myMediaPlayer=MediaPlayer.create(this,uri);
-        }
-        myMediaPlayer.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
-            @Override
-            public void onPrepared(MediaPlayer mp) {
-                int milils=myMediaPlayer.getDuration();
-                seekBar.setMax(milils);
-                int min=(milils/1000)/60;
-                int sec=(milils/1000)%60;
-                String miniPart="";
-
-                if(min<10){
-                    miniPart+="0"+String.valueOf(min);
-                }
-                else{
-                    miniPart+=String.valueOf(min);
-                }
-                String secPart="";
-                if(sec<10){
-                    secPart+="0"+String.valueOf(sec);
-                }
-                else{
-                    secPart+=String.valueOf(sec);
-                }
-                totalDuration.setText(miniPart+":"+secPart);
-//                Log.d("raj", String.valueOf(myMediaPlayer.getDuration()));
-                changeSeekBar();
-            }
-        });
-        songName.setText(allSongs.get(postion).getaAlbum());
-        playStatus=1;
-        play.setImageResource(R.drawable.pause);
-        curr_playing_pos=postion;
-        myMediaPlayer.start();
-    }
-    public void stop(){
-        if(myMediaPlayer!=null){
-            myMediaPlayer.release();
-            myMediaPlayer=null;
-        }
-    }
+//    public void play(int postion){
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//        Uri uri=Uri.parse("file:///"+allSongs.get(postion).getaName());
+//        if(myMediaPlayer==null){
+//            myMediaPlayer=MediaPlayer.create(this,uri);
+//        }
+//        else{
+//            stop();
+//            myMediaPlayer=MediaPlayer.create(this,uri);
+//        }
+//        myMediaPlayer.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+//            @Override
+//            public void onPrepared(MediaPlayer mp) {
+//                int milils=myMediaPlayer.getDuration();
+//                seekBar.setMax(milils);
+//                int min=(milils/1000)/60;
+//                int sec=(milils/1000)%60;
+//                String miniPart="";
+//
+//                if(min<10){
+//                    miniPart+="0"+String.valueOf(min);
+//                }
+//                else{
+//                    miniPart+=String.valueOf(min);
+//                }
+//                String secPart="";
+//                if(sec<10){
+//                    secPart+="0"+String.valueOf(sec);
+//                }
+//                else{
+//                    secPart+=String.valueOf(sec);
+//                }
+//                totalDuration.setText(miniPart+":"+secPart);
+////                Log.d("raj", String.valueOf(myMediaPlayer.getDuration()));
+//                changeSeekBar();
+//            }
+//        });
+//        songName.setText(allSongs.get(postion).getaAlbum());
+//        playStatus=1;
+//        play.setImageResource(R.drawable.pause);
+//        curr_playing_pos=postion;
+//        myMediaPlayer.start();
+//    }
+//    public void stop(){
+//        if(myMediaPlayer!=null){
+//            myMediaPlayer.release();
+//            myMediaPlayer=null;
+//        }
+//    }
 
     @Override
     public void onClick(View v) {
-        switch (v.getId()){
-            case R.id.IdPlayButton:{
-                if(playStatus==0){
-                    if(myMediaPlayer==null){
-                        Toast.makeText(this,"No songs selected ",Toast.LENGTH_SHORT).show();
-                    }
-                    else{
+        switch (v.getId()) {
+            case R.id.IdPlayButton: {
+//                if(myMusicPlayerService==null){
+//                    Log.d("raj","yes myMusicService is Null");
+//                }
+                if (myMusicPlayerService.isNull()) {
+                    Toast.makeText(this, "No songs selected ", Toast.LENGTH_SHORT).show();
+                } else {
+                    if (myMusicPlayerService.myPlay_status()) {
+                        myMusicPlayerService.pause();
+                        play.setImageResource(play_arrow);
 
+                    } else {
+                        myMusicPlayerService.play();
                         play.setImageResource(R.drawable.pause);
-                        myMediaPlayer.start();
-                        playStatus=1;
                     }
-                }
-                else{
-                    play.setImageResource(play_arrow);
-                    myMediaPlayer.pause();
-                    playStatus=0;
                 }
                 break;
             }
-            case R.id.IdSkipNext:{
-                Log.d("raj","skip next called");
-                if(playStatus==0){
-                    if(myMediaPlayer==null){
-                        curr_playing_pos=0;
-                        play(0);
-                    }
-                    else{
-                        curr_playing_pos++;
-                        curr_playing_pos%=allSongs.size();
-                        play(curr_playing_pos);
-                    }
-                }
-                else{
-                    curr_playing_pos++;
-                    curr_playing_pos%=allSongs.size();
-                    play(curr_playing_pos);
-                }
+            case R.id.IdSkipNext: {
+//                Log.d("raj", "skip next called");
+                playNext();
                 break;
             }
-            case R.id.IdSkipPreviouse:{
-                if(playStatus==0){
-                    if(myMediaPlayer==null){
-                        curr_playing_pos=0;
-                        play(0);
-                    }
-                    else{
-                        curr_playing_pos--;
-                        curr_playing_pos+=allSongs.size();
-                        curr_playing_pos%=allSongs.size();
-                        play(curr_playing_pos);
-                    }
+            case R.id.IdSkipPreviouse: {
+//                Log.d("raj", "skip previose called");
+                if (myMusicPlayerService.isNull()) {
+                    curr_playing_pos = 0;
+                } else {
+                    curr_playing_pos--;
+                    curr_playing_pos += allSongs.size();
+                    curr_playing_pos %= allSongs.size();
                 }
-                else{
-                    curr_playing_pos++;
-                    curr_playing_pos%=allSongs.size();
-                    play(curr_playing_pos);
-                }
+                songName.setText(allSongs.get(curr_playing_pos).getaAlbum());
+                myMusicPlayerService.start(curr_playing_pos);
                 break;
             }
 
 
         }
     }
-    public void changeSeekBar(){
-        int milis=myMediaPlayer.getCurrentPosition();
-        int min=(milis/1000)/60;
-        int sec=(milis/1000)%60;
-        String miniPart="";
+    public void playNext(){
+        if (myMusicPlayerService.isNull()) {
+            curr_playing_pos = 0;
+        } else {
+            curr_playing_pos++;
+            curr_playing_pos %= allSongs.size();
+        }
+        songName.setText(allSongs.get(curr_playing_pos).getaAlbum());
+        myMusicPlayerService.start(curr_playing_pos);
+    }
 
-        if(min<10){
-            miniPart+="0"+String.valueOf(min);
-        }
-        else{
-            miniPart+=String.valueOf(min);
-        }
-        String secPart="";
-        if(sec<10){
-            secPart+="0"+String.valueOf(sec);
-        }
-        else{
-            secPart+=String.valueOf(sec);
-        }
-        currDuration.setText(miniPart+":"+secPart);
+    public void changeSeekBar() {
+        int milis = myMusicPlayerService.getCurPositionOfSong();
         seekBar.setProgress(milis);
-        if(myMediaPlayer.isPlaying()){
-            runnable=new Runnable() {
+        int min = (milis / 1000) / 60;
+        int sec = (milis / 1000) % 60;
+        String miniPart = "";
+
+        if (min < 10) {
+            miniPart += "0" + String.valueOf(min);
+        } else {
+            miniPart += String.valueOf(min);
+        }
+        String secPart = "";
+        if (sec < 10) {
+            secPart += "0" + String.valueOf(sec);
+        } else {
+            secPart += String.valueOf(sec);
+        }
+        currDuration.setText(miniPart + ":" + secPart);
+        //Log.d("raj1",milis+"");
+        if (!myMusicPlayerService.isNull() ) {
+            Runnable runnable = new Runnable() {
                 @Override
                 public void run() {
+//                    Log.d("raj","seekbar thread id is "+Thread.currentThread().getId()+"");
+
                     changeSeekBar();
                 }
             };
-            handler.postDelayed(runnable,1000);
+            handler.postDelayed(runnable, 1000);
 
         }
     }
+
     @Override
     protected void onStop() {
         super.onStop();
-        stop();
+        if (mbound) {
+            unbindService(serviceConnection);
+            mbound = false;
+        }
+        LocalBroadcastManager.getInstance(getApplicationContext()).unregisterReceiver(mySongCompleteReceiver);
+//        stop();
     }
 }

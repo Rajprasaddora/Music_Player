@@ -56,13 +56,16 @@
 
             <TextView
                 android:id="@+id/IdSongName"
-                android:layout_width="0dp"
+                android:layout_width="350dp"
                 android:layout_height="40dp"
                 android:layout_marginTop="10dp"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
                 android:ellipsize="marquee"
                 android:marqueeRepeatLimit="marquee_forever"
                 android:scrollHorizontally="true"
                 android:singleLine="true"
+
                 android:text="Song Name-Artist"
                 android:textColor="@color/cardview_light_background"
                 android:textSize="22sp"
